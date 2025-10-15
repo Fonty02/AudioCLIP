@@ -3,10 +3,43 @@
 import gzip
 import html
 import os
+import shutil
+import urllib.error
+import urllib.request
 from functools import lru_cache
 
 import ftfy
 import regex as re
+
+
+BPE_DOWNLOAD_URL = "https://openaipublic.azureedge.net/clip/bpe_simple_vocab_16e6.txt.gz"
+
+
+def _download_bpe_file(target_path: str) -> None:
+    tmp_path = target_path + ".tmp"
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    try:
+        with urllib.request.urlopen(BPE_DOWNLOAD_URL) as response, open(tmp_path, "wb") as output:
+            shutil.copyfileobj(response, output)
+    except (urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(
+            "Unable to download the CLIP BPE vocabulary. Run `git lfs pull` or provide the file manually."
+        ) from exc
+    os.replace(tmp_path, target_path)
+
+
+def _read_bpe_lines(bpe_path: str):
+    try:
+        with gzip.open(bpe_path, "rt", encoding="utf-8") as handle:
+            return handle.read().splitlines()
+    except (OSError, gzip.BadGzipFile):
+        with open(bpe_path, encoding="utf-8") as handle:
+            content = handle.read()
+        if content.startswith("version https://git-lfs.github.com/spec/v1"):
+            _download_bpe_file(bpe_path)
+            with gzip.open(bpe_path, "rt", encoding="utf-8") as handle:
+                return handle.read().splitlines()
+        return content.splitlines()
 
 
 @lru_cache()
@@ -65,9 +98,9 @@ class SimpleTokenizer(object):
     def __init__(self, bpe_path: str = default_bpe()):
         self.byte_encoder = bytes_to_unicode()
         self.byte_decoder = {v: k for k, v in self.byte_encoder.items()}
-        merges = gzip.open(bpe_path).read().decode("utf-8").split('\n')
+        merges = _read_bpe_lines(bpe_path)
         merges = merges[1:49152-256-2+1]
-        merges = [tuple(merge.split()) for merge in merges]
+        merges = [tuple(merge.split()) for merge in merges if merge]
         vocab = list(bytes_to_unicode().values())
         vocab = vocab + [v+'</w>' for v in vocab]
         for merge in merges:
