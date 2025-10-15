@@ -1,2 +1,3 @@
-./features_mmrec
-./features_mmrec copy
+features_mmrec
+features_mmrec copy
+AudioCLIP-Full-Training.pt
