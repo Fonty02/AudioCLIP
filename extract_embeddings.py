@@ -14,6 +14,9 @@ import librosa
 from tqdm import tqdm
 from typing import Dict, List, Tuple
 from typing import List
+from sentence_transformers import SentenceTransformer
+import whisper as whisper_model
+from transformers import ViTImageProcessor, ViTModel, CLIPProcessor, CLIPModel
 
 # URL BPE (raw gz) dal repo CLIP ufficiale
 BPE_URL = "https://raw.githubusercontent.com/openai/CLIP/main/clip/bpe_simple_vocab_16e6.txt.gz"
@@ -287,6 +290,171 @@ def l2_normalize_rows(arr):
     norms[norms == 0] = 1.0
     return arr / norms
 
+def extract_clip_features(valid_names, img_names, txt_names, device, batch_size=32):
+    """Estrae feature con CLIP (testo + immagini)"""
+    print("\n" + "="*80)
+    print("ESTRAZIONE CON CLIP (testo + immagini)")
+    print("="*80)
+    
+    clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+    clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    clip_model.eval()
+    
+    # Immagini
+    print("Estraggo feature immagini con CLIP...")
+    image_feats = []
+    image_paths = [img_names[n] for n in valid_names]
+    
+    for i in tqdm(range(0, len(image_paths), batch_size), desc="CLIP images"):
+        batch_paths = image_paths[i:i+batch_size]
+        images = []
+        for p in batch_paths:
+            try:
+                images.append(Image.open(p).convert('RGB'))
+            except Exception as e:
+                print(f"Errore caricamento {p}: {e}")
+                images.append(Image.new('RGB', (224, 224)))
+        
+        inputs = clip_processor(images=images, return_tensors="pt", padding=True).to(device)
+        with torch.no_grad():
+            feats = clip_model.get_image_features(**inputs)
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+            image_feats.append(feats.cpu().numpy())
+    
+    image_clip = np.vstack(image_feats).astype(np.float32)
+    
+    # Testi
+    print("Estraggo feature testo con CLIP...")
+    text_feats = []
+    text_paths = [txt_names[n] for n in valid_names]
+    
+    for i in tqdm(range(0, len(text_paths), batch_size), desc="CLIP texts"):
+        batch_paths = text_paths[i:i+batch_size]
+        texts = []
+        for p in batch_paths:
+            try:
+                texts.append(Path(p).read_text(encoding='utf-8').strip()[:1000])  # trunc a 1000 char
+            except Exception as e:
+                print(f"Errore lettura {p}: {e}")
+                texts.append("")
+        
+        inputs = clip_processor(text=texts, return_tensors="pt", padding=True, truncation=True).to(device)
+        with torch.no_grad():
+            feats = clip_model.get_text_features(**inputs)
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+            text_feats.append(feats.cpu().numpy())
+    
+    text_clip = np.vstack(text_feats).astype(np.float32)
+    
+    print(f"✓ CLIP completato: images {image_clip.shape}, texts {text_clip.shape}")
+    return image_clip, text_clip
+
+def extract_minilm_features(valid_names, txt_names, batch_size=32):
+    """Estrae feature con MiniLM (solo testo)"""
+    print("\n" + "="*80)
+    print("ESTRAZIONE CON MiniLM (solo testo)")
+    print("="*80)
+    
+    minilm = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    
+    print("Estraggo feature testo con MiniLM...")
+    texts = []
+    text_paths = [txt_names[n] for n in valid_names]
+    
+    for p in text_paths:
+        try:
+            texts.append(Path(p).read_text(encoding='utf-8').strip())
+        except Exception as e:
+            print(f"Errore lettura {p}: {e}")
+            texts.append("")
+    
+    text_minilm = minilm.encode(texts, batch_size=batch_size, show_progress_bar=True, 
+                                convert_to_numpy=True, normalize_embeddings=True)
+    text_minilm = text_minilm.astype(np.float32)
+    
+    print(f"✓ MiniLM completato: {text_minilm.shape}")
+    return text_minilm
+
+def extract_whisper_features(valid_names, aud_names, device, sr=16000):
+    """Estrae feature con Whisper (solo audio)"""
+    print("\n" + "="*80)
+    print("ESTRAZIONE CON Whisper (solo audio)")
+    print("="*80)
+    
+    whisper = whisper_model.load_model("base", device=device)
+    
+    print("Estraggo feature audio con Whisper...")
+    audio_feats = []
+    audio_paths = [aud_names[n] for n in valid_names]
+    
+    for p in tqdm(audio_paths, desc="Whisper audio"):
+        try:
+            # Whisper richiede 16kHz
+            y, _ = librosa.load(p, sr=sr, mono=True)
+            # Pad o trunc a 30s
+            target_len = 30 * sr
+            if len(y) > target_len:
+                y = y[:target_len]
+            else:
+                y = np.pad(y, (0, target_len - len(y)))
+            
+            # Whisper encoder
+            y_tensor = torch.from_numpy(y).float().to(device)
+            mel = whisper_model.log_mel_spectrogram(y_tensor).to(device)
+            
+            with torch.no_grad():
+                feats = whisper.encode(mel.unsqueeze(0))
+                # Prendi il primo token (media su tutta la sequenza)
+                feats = feats.mean(dim=1)  # (1, dim)
+                feats = feats / feats.norm(dim=-1, keepdim=True)
+                audio_feats.append(feats.cpu().numpy()[0])
+        except Exception as e:
+            print(f"Errore whisper {p}: {e}")
+            # Fallback: zero vector
+            audio_feats.append(np.zeros(512, dtype=np.float32))
+    
+    audio_whisper = np.stack(audio_feats).astype(np.float32)
+    
+    print(f"✓ Whisper completato: {audio_whisper.shape}")
+    return audio_whisper
+
+def extract_vit_features(valid_names, img_names, device, batch_size=32):
+    """Estrae feature con ViT (solo immagini)"""
+    print("\n" + "="*80)
+    print("ESTRAZIONE CON ViT (solo immagini)")
+    print("="*80)
+    
+    vit_processor = ViTImageProcessor.from_pretrained('google/vit-base-patch16-224')
+    vit_model = ViTModel.from_pretrained('google/vit-base-patch16-224').to(device)
+    vit_model.eval()
+    
+    print("Estraggo feature immagini con ViT...")
+    image_feats = []
+    image_paths = [img_names[n] for n in valid_names]
+    
+    for i in tqdm(range(0, len(image_paths), batch_size), desc="ViT images"):
+        batch_paths = image_paths[i:i+batch_size]
+        images = []
+        for p in batch_paths:
+            try:
+                images.append(Image.open(p).convert('RGB'))
+            except Exception as e:
+                print(f"Errore caricamento {p}: {e}")
+                images.append(Image.new('RGB', (224, 224)))
+        
+        inputs = vit_processor(images=images, return_tensors="pt").to(device)
+        with torch.no_grad():
+            outputs = vit_model(**inputs)
+            feats = outputs.last_hidden_state[:, 0, :]  # CLS token
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+            image_feats.append(feats.cpu().numpy())
+    
+    image_vit = np.vstack(image_feats).astype(np.float32)
+    
+    print(f"✓ ViT completato: {image_vit.shape}")
+    return image_vit
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--images", required=False, help="Cartella con immagini (.jpg/.png)", default="../ml1m/_images")
@@ -312,8 +480,24 @@ def main():
         print("Se preferisci, applica la patch al tokenizer o scarica manualmente il file BPE gz nella cartella utils/")
         sys.exit(1)
 
-    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
-    print(f"Device: {device}")
+    # Gestione device con fallback automatico
+    if args.device == "cuda":
+        try:
+            # Tenta di inizializzare CUDA
+            if torch.cuda.is_available():
+                torch.cuda.init()
+                device = torch.device("cuda")
+                print(f"Device: cuda (GPU: {torch.cuda.get_device_name(0)})")
+            else:
+                print("[warn] CUDA richiesto ma non disponibile, fallback a CPU")
+                device = torch.device("cpu")
+        except Exception as e:
+            print(f"[warn] Errore inizializzazione CUDA: {e}")
+            print("[warn] Fallback automatico a CPU")
+            device = torch.device("cpu")
+    else:
+        device = torch.device(args.device)
+        print(f"Device: {device}")
 
     # carica modello
     model = load_model(args.weights, device)
@@ -411,12 +595,55 @@ def main():
     audios_np = np.stack([audio_results[n] for n in valid_names], axis=0).astype(np.float32)
     texts_np = np.stack([text_results[n] for n in valid_names], axis=0).astype(np.float32)
 
-    np.save(outdir / "images.npy", images_np)
-    print(f"Salvato {outdir/'images.npy'} shape={images_np.shape}")
-    np.save(outdir / "audios.npy", audios_np)
-    print(f"Salvato {outdir/'audios.npy'} shape={audios_np.shape}")
-    np.save(outdir / "texts.npy", texts_np)
-    print(f"Salvato {outdir/'texts.npy'} shape={texts_np.shape}")
+    # Salva embeddings AudioCLIP
+    np.save(outdir / "image_audioclip.npy", images_np)
+    print(f"Salvato {outdir/'image_audioclip.npy'} shape={images_np.shape}")
+    np.save(outdir / "audio_audioclip.npy", audios_np)
+    print(f"Salvato {outdir/'audio_audioclip.npy'} shape={audios_np.shape}")
+    np.save(outdir / "text_audioclip.npy", texts_np)
+    print(f"Salvato {outdir/'text_audioclip.npy'} shape={texts_np.shape}")
+
+    # =============================================================================
+    # ESTRAZIONE CON ALTRI MODELLI (stessi campioni valid_names)
+    # =============================================================================
+    
+    print("\n" + "="*80)
+    print("INIZIO ESTRAZIONE CON MODELLI AGGIUNTIVI")
+    print("="*80)
+    
+    # CLIP (testo + immagini)
+    try:
+        image_clip, text_clip = extract_clip_features(valid_names, img_names, txt_names, device, batch_size=args.batch_size)
+        np.save(outdir / "image_clip.npy", image_clip)
+        np.save(outdir / "text_clip.npy", text_clip)
+        print(f"✓ Salvati embeddings CLIP")
+    except Exception as e:
+        print(f"❌ Errore CLIP: {e}")
+    
+    # MiniLM (solo testo)
+    try:
+        text_minilm = extract_minilm_features(valid_names, txt_names, batch_size=args.batch_size)
+        np.save(outdir / "text_minilm.npy", text_minilm)
+        print(f"✓ Salvati embeddings MiniLM")
+    except Exception as e:
+        print(f"❌ Errore MiniLM: {e}")
+    
+    # Whisper (solo audio)
+    try:
+        audio_whisper = extract_whisper_features(valid_names, aud_names, device, sr=16000)
+        np.save(outdir / "audio_whisper.npy", audio_whisper)
+        print(f"✓ Salvati embeddings Whisper")
+    except Exception as e:
+        print(f"❌ Errore Whisper: {e}")
+    
+    # ViT (solo immagini)
+    try:
+        image_vit = extract_vit_features(valid_names, img_names, device, batch_size=args.batch_size)
+        np.save(outdir / "image_vit.npy", image_vit)
+        print(f"✓ Salvati embeddings ViT")
+    except Exception as e:
+        print(f"❌ Errore ViT: {e}")
+
 
     # opzionale normalizzazione L2 prima della concatenazione
     if args.l2norm:
@@ -443,11 +670,31 @@ def main():
     print("✓ ESTRAZIONE COMPLETATA CON SUCCESSO")
     print("="*80)
     print(f"Files salvati in: {outdir}")
-    print(f"  - images.npy:  {images_np.shape}")
-    print(f"  - audios.npy:  {audios_np.shape}")
-    print(f"  - texts.npy:   {texts_np.shape}")
+    print(f"\nAudioCLIP:")
+    print(f"  - image_audioclip.npy:  {images_np.shape}")
+    print(f"  - audio_audioclip.npy:  {audios_np.shape}")
+    print(f"  - text_audioclip.npy:   {texts_np.shape}")
+    print(f"\nModelli aggiuntivi (se disponibili):")
+    
+    # Verifica e stampa info sui file salvati
+    all_files = {
+        "image_clip.npy": "CLIP immagini",
+        "text_clip.npy": "CLIP testo",
+        "text_minilm.npy": "MiniLM testo",
+        "audio_whisper.npy": "Whisper audio",
+        "image_vit.npy": "ViT immagini"
+    }
+    
+    for fname, desc in all_files.items():
+        fpath = outdir / fname
+        if fpath.exists():
+            arr = np.load(fpath)
+            print(f"  - {fname}: {arr.shape} ({desc})")
+    
     if not args.no_concat:
+        print(f"\nConcatenato:")
         print(f"  - concatenated.npy: {concatenated.shape}")
+    print(f"\nMapping:")
     print(f"  - item_features.csv: {len(valid_names)} righe")
     print("="*80)
 
