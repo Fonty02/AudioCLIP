@@ -9,11 +9,13 @@ torch==1.7.1
 torchvision==0.8.2
 tqdm==4.43.0
 visdom==0.1.8.9
+
+# VGGish (Google) - per estrazione feature audio
+tensorflow>=2.8.0
+tensorflow-hub>=0.12.0
+
 # MiniLM (Sentence Transformers)
 sentence-transformers>=2.2.0
-
-# Whisper (OpenAI)
-openai-whisper>=20230124
 
 # ViT (Transformers)
 transformers>=4.25.0
