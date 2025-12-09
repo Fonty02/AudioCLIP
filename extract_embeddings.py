@@ -692,27 +692,10 @@ def main():
         ensure_bpe(repo_root)
     except Exception as ex:
         print("[error] BPE check/download failed:", ex)
-        print("Se preferisci, applica la patch al tokenizer o scarica manualmente il file BPE gz nella cartella utils/")
         sys.exit(1)
 
-    # Gestione device con fallback automatico
-    if args.device == "cuda":
-        try:
-            # Tenta di inizializzare CUDA
-            if torch.cuda.is_available():
-                torch.cuda.init()
-                device = torch.device("cuda")
-                print(f"Device: cuda (GPU: {torch.cuda.get_device_name(0)})")
-            else:
-                print("[warn] CUDA richiesto ma non disponibile, fallback a CPU")
-                device = torch.device("cpu")
-        except Exception as e:
-            print(f"[warn] Errore inizializzazione CUDA: {e}")
-            print("[warn] Fallback automatico a CPU")
-            device = torch.device("cpu")
-    else:
-        device = torch.device(args.device)
-        print(f"Device: {device}")
+    device = torch.device(args.device if torch.cuda.is_available() and 'cuda' in args.device else 'cpu')
+    print(f"Using device: {device}")
 
     # carica modello AudioCLIP
     model = load_model(args.weights, device)
