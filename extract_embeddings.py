@@ -13,21 +13,20 @@ from torchvision import transforms
 import librosa
 from tqdm import tqdm
 from typing import Dict, List, Tuple
-from typing import List
 from sentence_transformers import SentenceTransformer
 from transformers import ViTImageProcessor, ViTModel, CLIPProcessor, CLIPModel
 
 # VGGish PyTorch
 from torchvggish import vggish, vggish_input
 
-# URL BPE (raw gz) dal repo CLIP ufficiale
+# URL for BPE (raw gz) from the official CLIP repo
 BPE_URL = "https://raw.githubusercontent.com/openai/CLIP/main/clip/bpe_simple_vocab_16e6.txt.gz"
 BPE_LOCAL_REL = "utils/bpe_simple_vocab_16e6.txt.gz"
 
 def ensure_bpe(repo_root: Path):
     """
-    Assicura che utils/bpe_simple_vocab_16e6.txt.gz esista e sia un gzip valido.
-    In caso contrario, prova a scaricarlo dal repo CLIP.
+    Ensure that utils/bpe_simple_vocab_16e6.txt.gz exists and is a valid gzip file.
+    If not, try to download it from the CLIP repository.
     """
     bpe_path = repo_root / BPE_LOCAL_REL
     bpe_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,18 +69,18 @@ def ensure_bpe(repo_root: Path):
 
 def validate_audio_file(audio_path, sr=44100):
     """
-    Valida un file audio con librosa (veloce, basico).
-    Restituisce (is_valid, error_message)
+    Validate an audio file with librosa (fast, basic).
+    Returns (is_valid, error_message)
     """
     try:
-        # Prova a caricare l'audio
+        # Try to load the audio
         y, sr_loaded = librosa.load(audio_path, sr=sr, mono=True)
         
-        # Verifica che l'audio non sia vuoto
+        # Check that the audio is not empty
         if len(y) == 0:
-            return False, "Audio vuoto (0 campioni)"
+            return False, "Empty audio (0 samples)"
         
-        # Verifica sample rate
+        # Check sample rate
         if sr_loaded <= 0:
             return False, f"Invalid sample rate: {sr_loaded}"
         
@@ -93,47 +92,53 @@ def validate_audio_file(audio_path, sr=44100):
 
 def validate_vggish_audio_file(audio_path):
     """
-    Valida un file audio specificamente per VGGish (wavfile_to_examples).
-    Restituisce (is_valid, error_message)
+    Validate an audio file specifically for VGGish (wavfile_to_examples).
+    Returns (is_valid, error_message)
     """
     try:
-        # Prova a processare con vggish_input
-        # Nota: vggish_input.wavfile_to_examples richiede che il file sia in formato
-        # WAV valido con sample rate corretto (tipicamente 16kHz)
+        # Try to process with vggish_input
+        # Note: vggish_input.wavfile_to_examples requires the file to be in valid
+        # WAV format with correct sample rate (typically 16kHz)
         examples = vggish_input.wavfile_to_examples(str(audio_path))
         
-        # Verifica che gli esempi non siano vuoti
+        # Check that the examples are not empty
         if len(examples) == 0:
             return False, "VGGish generated no patches"
         
         return True, None
     except TypeError as e:
-        # Errore tipico: 'float' object cannot be interpreted as an integer
-        # Significa che il file WAV ha un formato non standard
+        # Typical error: 'float' object cannot be interpreted as an integer
+        # Means the WAV file has a non-standard format
         return False, f"Invalid WAV format: {str(e)[:40]}"
     except Exception as e:
         return False, f"VGGish error: {str(e)[:50]}"
 
 def validate_all_audio_files(audio_files, validation_mode='quick'):
     """
-    Valida TUTTI i file audio e restituisce:
-    - valid_stems: lista di stem validi
+    Validate ALL audio files and return:
+    - valid_stems: list of valid stems
     - invalid_stems: dict {stem: error_reason}
     
     validation_mode:
-      'quick': usa solo librosa.load (veloce)
-      'vggish': usa vggish_input.wavfile_to_examples (più severo, ma lento)
+      'quick': use only librosa.load (fast)
+      'vggish': use vggish_input.wavfile_to_examples (stricter, but slow)
     """
     print("\n" + "="*80)
-    print("VALIDAZIONE PRELIMINARE FILE AUDIO")
+    print("PRELIMINARY AUDIO FILE VALIDATION")
     print("="*80)
-    print(f"Controllo {len(audio_files)} file audio ({validation_mode} mode)...")
+    print(f"Checking {len(audio_files)} audio files ({validation_mode} mode)...")
     
     valid_stems = []
     invalid_stems = {}
     
-    for audio_path in tqdm(audio_files, desc="Audio validation"):
+    for idx, audio_path in enumerate(tqdm(audio_files, desc="Audio validation"), start=1):
         stem = Path(audio_path).stem
+        
+        # Specific skip for problematic file at position 5652
+        if idx == 5652:
+            print(f"\n⚠ Skipping file at position {idx}: {stem} (problematic file)")
+            invalid_stems[stem] = "Manually skipped (position 5652)"
+            continue
         
         if validation_mode == 'vggish':
             is_valid, error = validate_vggish_audio_file(audio_path)
@@ -145,37 +150,37 @@ def validate_all_audio_files(audio_files, validation_mode='quick'):
         else:
             invalid_stems[stem] = error
     
-    print(f"\n✓ Validazione completata:")
-    print(f"  - File validi: {len(valid_stems)}")
-    print(f"  - File corrotti: {len(invalid_stems)}")
+    print(f"\n✓ Validation completed:")
+    print(f"  - Valid files: {len(valid_stems)}")
+    print(f"  - Corrupted files: {len(invalid_stems)}")
     
     if invalid_stems:
-        print(f"\n⚠ File audio corrotti trovati:")
+        print(f"\n⚠ Corrupted audio files found:")
         for stem, error in list(invalid_stems.items())[:10]:
             print(f"  - {stem}: {error}")
         if len(invalid_stems) > 10:
-            print(f"  ... e altri {len(invalid_stems) - 10} file corrotti")
+            print(f"  ... and {len(invalid_stems) - 10} more corrupted files")
         
-        # Salva log dei file corrotti
+        # Save log of corrupted files
         log_path = Path("corrupted_audios.log")
         with open(log_path, "w", encoding='utf-8') as f:
-            f.write(f"Validazione audio: {len(invalid_stems)} file corrotti\n")
+            f.write(f"Audio validation: {len(invalid_stems)} corrupted files\n")
             f.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
             for stem, error in sorted(invalid_stems.items()):
                 f.write(f"{stem}: {error}\n")
-        print(f"\n✓ Log salvato: {log_path}")
+        print(f"\n✓ Log saved: {log_path}")
     else:
-        print(f"\n✓ Tutti i file audio sono validi!")
+        print(f"\n✓ All audio files are valid!")
     
     print("="*80)
     
     return valid_stems, invalid_stems
 
 def summarize_failures(label: str, failures: Dict[str, str], max_items: int = 5) -> None:
-    """Logga un riepilogo leggibile dei file saltati."""
+    """Log a readable summary of skipped files."""
     if not failures:
         return
-    print(f"[warn] {len(failures)} {label} saltati per errori di estrazione.")
+    print(f"[warn] {len(failures)} {label} skipped due to extraction errors.")
     for name, reason in list(failures.items())[:max_items]:
         print(f"  - {name}: {reason}")
     if len(failures) > max_items:
@@ -195,12 +200,7 @@ def get_image_preprocess(model):
     ])
     return preprocess, res
 
-def batchify(lst, batch_size):
-    for i in range(0, len(lst), batch_size):
-        yield lst[i:i+batch_size]
-
 def load_model(weights, device):
-    # import here after the BPE has been ensured
     from model.audioclip import AudioCLIP
     if weights is None:
         model = AudioCLIP(pretrained=True)
@@ -212,15 +212,15 @@ def load_model(weights, device):
 
 def load_vggish_model(device='cpu'):
     """
-    Carica il modello VGGish usando torchvggish (PyTorch).
-    Restituisce il modello PyTorch pronto per l'inferenza.
+    Load the VGGish model using torchvggish (PyTorch).
+    Returns the PyTorch model ready for inference.
     """
-    print("[VGGish] Caricamento modello torchvggish (PyTorch)...")
+    print("[VGGish] Loading torchvggish model (PyTorch)...")
     model = vggish()
     model.eval()
-    # Usa device specificato (GPU se disponibile)
+    # Use specified device (GPU if available)
     model.to(device)
-    print(f"[VGGish] ✓ Modello caricato con successo su {device}")
+    print(f"[VGGish] ✓ Model loaded successfully on {device}")
     return model
 
 def process_images_ordered(model, preprocess, image_items, device, batch_size=8):
@@ -291,7 +291,7 @@ def process_audios_sliding_mean(model, audio_items, device, sr=44100,
         try:
             y, _ = librosa.load(path, sr=sr, mono=True)
             if len(y) == 0:
-                raise ValueError("audio vuoto")
+                raise ValueError("empty audio")
             if len(y) < win:
                 y_pad = fix_audio_length(y, win)
                 windows = [y_pad]
@@ -315,8 +315,8 @@ def process_audios_sliding_mean(model, audio_items, device, sr=44100,
 
 def process_texts_ordered(model, text_items, device, batch_size=32, max_tokens=77):
     """
-    Processa i testi con sliding window se necessario.
-    Se un testo supera max_tokens dopo tokenizzazione, lo divide in chunk e fa la media degli embeddings.
+    Process texts with sliding window if necessary.
+    If a text exceeds max_tokens after tokenization, split it into chunks and average the embeddings.
     """
     feats_dict: Dict[str, np.ndarray] = {}
     failures: Dict[str, str] = {}
@@ -328,9 +328,9 @@ def process_texts_ordered(model, text_items, device, batch_size=32, max_tokens=7
         try:
             txt = Path(path).read_text(encoding='utf-8').strip()
             
-            # Tokenizza il testo per vedere quanto è lungo
+            # Tokenize the text to see how long it is
             try:
-                # Prova prima a tokenizzare normalmente
+                # Try to tokenize normally first
                 with torch.no_grad():
                     feats = model.encode_text([[txt]])
                     feats = feats / feats.norm(dim=-1, keepdim=True)
@@ -339,8 +339,8 @@ def process_texts_ordered(model, text_items, device, batch_size=32, max_tokens=7
                 if "too long for context length" not in str(e):
                     raise
                 
-                # Il testo è troppo lungo, dividiamolo in frasi
-                # Splitta per punti, mantieni i separatori
+                # The text is too long, split it into sentences
+                # Split by periods, keep separators
                 sentences = []
                 for part in txt.replace('! ', '.|').replace('? ', '.|').split('.'):
                     part = part.replace('.|', '. ').strip()
@@ -350,18 +350,18 @@ def process_texts_ordered(model, text_items, device, batch_size=32, max_tokens=7
                 if not sentences:
                     sentences = [txt[:500]]  # fallback
                 
-                # Raggruppa le frasi in chunk che stanno sotto max_tokens
+                # Group sentences into chunks that fit under max_tokens
                 chunks = []
                 current_chunk = ""
                 
                 for sent in sentences:
                     test_chunk = (current_chunk + " " + sent).strip()
-                    # Prova a tokenizzare per vedere se sta sotto il limite
+                    # Try to tokenize to see if it fits under the limit
                     try:
                         _ = tokenize([test_chunk])
                         current_chunk = test_chunk
                     except RuntimeError:
-                        # Troppo lungo, salva il chunk corrente e inizia nuovo
+                        # Too long, save current chunk and start new
                         if current_chunk:
                             chunks.append(current_chunk)
                         current_chunk = sent
@@ -369,26 +369,26 @@ def process_texts_ordered(model, text_items, device, batch_size=32, max_tokens=7
                 if current_chunk:
                     chunks.append(current_chunk)
                 
-                # Se ancora troppo lunghi, tronca ogni chunk ai primi N caratteri
+                # If still too long, truncate each chunk to first N characters
                 safe_chunks = []
                 for chunk in chunks:
-                    while len(chunk) > 50:  # almeno qualche parola
+                    while len(chunk) > 50:  # at least some words
                         try:
                             _ = tokenize([chunk])
                             safe_chunks.append(chunk)
                             break
                         except RuntimeError:
-                            # Riduci del 20%
+                            # Reduce by 20%
                             chunk = chunk[:int(len(chunk) * 0.8)]
                     else:
                         if chunk:
                             safe_chunks.append(chunk)
                 
                 if not safe_chunks:
-                    # Ultimo fallback: primi 200 caratteri
+                    # Last fallback: first 200 characters
                     safe_chunks = [txt[:200]]
                 
-                # Processa i chunk e fai la media
+                # Process chunks and average
                 all_chunk_feats = []
                 for chunk in safe_chunks:
                     with torch.no_grad():
@@ -396,7 +396,7 @@ def process_texts_ordered(model, text_items, device, batch_size=32, max_tokens=7
                         feats = feats / feats.norm(dim=-1, keepdim=True)
                         all_chunk_feats.append(feats.cpu().numpy().astype(np.float32)[0])
                 
-                # Media di tutti i chunk
+                # Average of all chunks
                 feats_dict[name] = np.mean(all_chunk_feats, axis=0)
                 
         except Exception as ex:
@@ -411,25 +411,25 @@ def l2_normalize_rows(arr):
     return arr / norms
 
 def extract_clip_features(valid_names, img_names, txt_names, device, batch_size=32):
-    """Estrae feature con CLIP (testo + immagini)"""
+    """Extract features with CLIP (text + images)"""
     print("\n" + "="*80)
-    print("ESTRAZIONE CON CLIP (testo + immagini)")
+    print("EXTRACTION WITH CLIP (text + images)")
     print("="*80)
     
     try:
         clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", use_safetensors=True)
         clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
     except Exception as e:
-        print(f"Errore caricamento modello CLIP: {e}")
-        print("Provo senza use_safetensors...")
+        print(f"Error loading CLIP model: {e}")
+        print("Trying without use_safetensors...")
         clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
         clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
     
     clip_model.to(device)
     clip_model.eval()
     
-    # Immagini
-    print("Estraggo feature immagini con CLIP...")
+    # Images
+    print("Extracting image features with CLIP...")
     image_feats = []
     image_paths = [img_names[n] for n in valid_names]
     img_failures = 0
@@ -442,7 +442,7 @@ def extract_clip_features(valid_names, img_names, txt_names, device, batch_size=
                 images.append(Image.open(p).convert('RGB'))
             except Exception as e:
                 if img_failures < 5:
-                    print(f"\nErrore caricamento {p}: {e}")
+                    print(f"\nError loading {p}: {e}")
                 img_failures += 1
                 images.append(Image.new('RGB', (224, 224)))
         
@@ -453,17 +453,17 @@ def extract_clip_features(valid_names, img_names, txt_names, device, batch_size=
                 feats = feats / feats.norm(dim=-1, keepdim=True)
                 image_feats.append(feats.cpu().numpy())
         except Exception as e:
-            print(f"\nErrore batch immagini {i}: {e}")
+            print(f"\nError batch images {i}: {e}")
             # Fallback: zero vectors
             image_feats.append(np.zeros((len(images), 512), dtype=np.float32))
     
     if img_failures > 0:
-        print(f"\n⚠ {img_failures} immagini hanno generato errori")
+        print(f"\n⚠ {img_failures} images generated errors")
     
     image_clip = np.vstack(image_feats).astype(np.float32)
     
-    # Testi
-    print("Estraggo feature testo con CLIP...")
+    # Texts
+    print("Extracting text features with CLIP...")
     text_feats = []
     text_paths = [txt_names[n] for n in valid_names]
     txt_failures = 0
@@ -474,11 +474,11 @@ def extract_clip_features(valid_names, img_names, txt_names, device, batch_size=
         for p in batch_paths:
             try:
                 txt_content = Path(p).read_text(encoding='utf-8').strip()
-                # CLIP ha limite di 77 token, quindi tronca più aggressivamente
+                # CLIP has 77 token limit, so truncate more aggressively
                 texts.append(txt_content[:500])
             except Exception as e:
                 if txt_failures < 5:
-                    print(f"\nErrore lettura {p}: {e}")
+                    print(f"\nError reading {p}: {e}")
                 txt_failures += 1
                 texts.append("")
         
@@ -489,27 +489,27 @@ def extract_clip_features(valid_names, img_names, txt_names, device, batch_size=
                 feats = feats / feats.norm(dim=-1, keepdim=True)
                 text_feats.append(feats.cpu().numpy())
         except Exception as e:
-            print(f"\nErrore batch testi {i}: {e}")
+            print(f"\nError batch texts {i}: {e}")
             # Fallback: zero vectors
             text_feats.append(np.zeros((len(texts), 512), dtype=np.float32))
     
     if txt_failures > 0:
-        print(f"\n⚠ {txt_failures} testi hanno generato errori")
+        print(f"\n⚠ {txt_failures} texts generated errors")
     
     text_clip = np.vstack(text_feats).astype(np.float32)
     
-    print(f"✓ CLIP completato: images {image_clip.shape}, texts {text_clip.shape}")
+    print(f"✓ CLIP completed: images {image_clip.shape}, texts {text_clip.shape}")
     return image_clip, text_clip
 
 def extract_minilm_features(valid_names, txt_names, batch_size=32):
-    """Estrae feature con MiniLM (solo testo)"""
+    """Extract features with MiniLM (text only)"""
     print("\n" + "="*80)
-    print("ESTRAZIONE CON MiniLM (solo testo)")
+    print("EXTRACTION WITH MiniLM (text only)")
     print("="*80)
     
     minilm = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
     
-    print("Estraggo feature testo con MiniLM...")
+    print("Extracting text features with MiniLM...")
     texts = []
     text_paths = [txt_names[n] for n in valid_names]
     
@@ -517,38 +517,37 @@ def extract_minilm_features(valid_names, txt_names, batch_size=32):
         try:
             texts.append(Path(p).read_text(encoding='utf-8').strip())
         except Exception as e:
-            print(f"Errore lettura {p}: {e}")
+            print(f"Error reading {p}: {e}")
             texts.append("")
     
     text_minilm = minilm.encode(texts, batch_size=batch_size, show_progress_bar=True, 
                                 convert_to_numpy=True, normalize_embeddings=True)
     text_minilm = text_minilm.astype(np.float32)
     
-    print(f"✓ MiniLM completato: {text_minilm.shape}")
+    print(f"✓ MiniLM completed: {text_minilm.shape}")
     return text_minilm
 
-def extract_vggish_features(valid_names, aud_names, vggish_model, device='cpu', max_workers=8, batch_inference_size=None):
-    """Estrae feature con VGGish PyTorch (solo audio) - comportamento per-file (compatto)
+def extract_vggish_features(valid_names, aud_names, vggish_model, device='cpu', max_workers=1, batch_inference_size=None):
+    """Extract features with VGGish PyTorch (audio only) - per-file behavior (compact)
 
-    Questa versione elabora ogni file singolarmente: per ogni file chiama
-    vggish_input.wavfile_to_examples() e poi passa gli esempi al modello.
-    Mantiene la possibilità di specificare `device` e `max_workers` (per ThreadPool)
-    per compatibilità con le chiamate esistenti.
+    This version processes each file individually: for each file calls
+    vggish_input.wavfile_to_examples() and then passes the examples to the model.
+    Keeps the ability to specify `device` and `max_workers` (for ThreadPool)
+    for compatibility with existing calls.
     """
     print("\n" + "="*80)
-    print("ESTRAZIONE CON VGGish PyTorch (solo audio)")
+    print("EXTRACTION WITH VGGish PyTorch (audio only)")
     print("="*80)
 
     audio_feats = []
     audio_paths = [aud_names[n] for n in valid_names]
     failures = 0
 
-    # Imposta default per max_workers se None
     if max_workers is None:
         import multiprocessing
-        max_workers = min(multiprocessing.cpu_count(), 8)
+        max_workers = min(multiprocessing.cpu_count(), 1)
 
-    print(f"Estraggo feature audio con VGGish (per-file) usando {max_workers} worker...")
+    print(f"Extracting audio features with VGGish (per-file) using {max_workers} workers...")
 
     from concurrent.futures import ThreadPoolExecutor
 
@@ -558,7 +557,7 @@ def extract_vggish_features(valid_names, aud_names, vggish_model, device='cpu', 
             if len(examples) == 0:
                 return None, "No audio patches generated"
 
-            # sposta gli esempi sul device del modello se necessario
+            # move examples to model device if necessary
             try:
                 examples = examples.to(device)
             except Exception:
@@ -576,7 +575,7 @@ def extract_vggish_features(valid_names, aud_names, vggish_model, device='cpu', 
         except Exception as e:
             return None, str(e)
 
-    # Processa in batch paralleli (I/O + preprocessing)
+    # Process in parallel batches (I/O + preprocessing)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         results = list(tqdm(
             executor.map(process_single_file, audio_paths),
@@ -589,28 +588,28 @@ def extract_vggish_features(valid_names, aud_names, vggish_model, device='cpu', 
             audio_feats.append(feat)
         else:
             if failures < 5:
-                print(f"\nErrore VGGish {audio_paths[i]}: {error}")
+                print(f"\nVGGish error {audio_paths[i]}: {error}")
             failures += 1
             audio_feats.append(np.zeros(128, dtype=np.float32))
 
     if failures > 0:
-        print(f"\n⚠ {failures} file audio hanno generato errori (sostituiti con zero vectors)")
+        print(f"\n⚠ {failures} audio files generated errors (replaced with zero vectors)")
 
     audio_vggish = np.stack(audio_feats).astype(np.float32)
-    print(f"✓ VGGish completato: {audio_vggish.shape}")
+    print(f"✓ VGGish completed: {audio_vggish.shape}")
     return audio_vggish
 
 def extract_vit_features(valid_names, img_names, device, batch_size=32):
-    """Estrae feature con ViT (solo immagini)"""
+    """Extract features with ViT (images only)"""
     print("\n" + "="*80)
-    print("ESTRAZIONE CON ViT (solo immagini)")
+    print("EXTRACTION WITH ViT (images only)")
     print("="*80)
     
     vit_processor = ViTImageProcessor.from_pretrained('google/vit-base-patch16-224')
     vit_model = ViTModel.from_pretrained('google/vit-base-patch16-224').to(device)
     vit_model.eval()
     
-    print("Estraggo feature immagini con ViT...")
+    print("Extracting image features with ViT...")
     image_feats = []
     image_paths = [img_names[n] for n in valid_names]
     img_failures = 0
@@ -621,7 +620,7 @@ def extract_vit_features(valid_names, img_names, device, batch_size=32):
         for p in batch_paths:
             try:
                 img = Image.open(p)
-                # Gestisci palette images con trasparenza
+                # Handle palette images with transparency
                 if img.mode == 'P' and 'transparency' in img.info:
                     img = img.convert('RGBA').convert('RGB')
                 else:
@@ -629,7 +628,7 @@ def extract_vit_features(valid_names, img_names, device, batch_size=32):
                 images.append(img)
             except Exception as e:
                 if img_failures < 5:
-                    print(f"\nErrore caricamento {p}: {e}")
+                    print(f"\nError loading {p}: {e}")
                 img_failures += 1
                 images.append(Image.new('RGB', (224, 224)))
         
@@ -641,18 +640,35 @@ def extract_vit_features(valid_names, img_names, device, batch_size=32):
                 feats = feats / feats.norm(dim=-1, keepdim=True)
                 image_feats.append(feats.cpu().numpy())
         except Exception as e:
-            print(f"\nErrore batch ViT {i}: {e}")
-            # Fallback: zero vectors (768 per ViT base)
+            print(f"\nError batch ViT {i}: {e}")
+            # Fallback: zero vectors (768 for ViT base)
             image_feats.append(np.zeros((len(images), 768), dtype=np.float32))
     
     if img_failures > 0:
-        print(f"\n⚠ {img_failures} immagini hanno generato errori in ViT")
+        print(f"\n⚠ {img_failures} images generated errors in ViT")
     
     image_vit = np.vstack(image_feats).astype(np.float32)
     
     print(f"✓ ViT completato: {image_vit.shape}")
     return image_vit
 
+
+def load_or_extract_single(outdir: Path, filename: str, extract_func, *args, desc: str = "", **kwargs):
+    fpath = outdir / filename
+    if fpath.exists():
+        print(f"\n✓ {desc} features already exist, loading")
+        arr = np.load(fpath)
+        print(f"  Loaded: {arr.shape}")
+        return arr
+    else:
+        try:
+            result = extract_func(*args, **kwargs)
+            np.save(fpath, result)
+            print(f"✓ Saved {desc} embeddings")
+            return result
+        except Exception as e:
+            print(f"❌ {desc} error: {e}")
+            return None
 
 def main():
     parser = argparse.ArgumentParser()
@@ -661,7 +677,7 @@ def main():
     parser.add_argument("--texts", required=False, help="Cartella con testi (.txt)", default="../lastfm/raw/_texts")
     parser.add_argument("--weights", default="AudioCLIP-Full-Training.pt", help="Path al file di pesi AudioCLIP (.pt). Se omesso usa pretrained=True del repo.")
     parser.add_argument("--outdir", default="lastfm_features", help="Cartella output")
-    parser.add_argument("--device", default="cuda", help="cuda o cpu (default: auto)")
+    parser.add_argument("--device", default="cuda:1", help="cuda o cpu (default: auto)")
     parser.add_argument("--batch-size", type=int, default=512, help="batch size per immagini/testo")
     parser.add_argument("--window-batch-size", type=int, default=512, help="batch size quando si codificano molte finestre audio")
     parser.add_argument("--audio-sr", type=int, default=44100, help="Sample rate per caricare gli audio")
@@ -720,14 +736,14 @@ def main():
     if audio_files:
         audio_stems_valid, audio_stems_invalid = validate_all_audio_files(
             audio_files, 
-            validation_mode='quick'  # usa librosa.load (veloce)
-            # Cambia a 'vggish' per test più severi, ma è più lento
+            validation_mode='quick'  # use librosa.load (fast)
+            # Change to 'vggish' for stricter tests, but slower
         )
-        # Filtra audio_files per mantenere solo i validi
+        # Filter audio_files to keep only valid ones
         audio_files = [p for p in audio_files if Path(p).stem in audio_stems_valid]
         
         if audio_stems_invalid:
-            print(f"\n⚠ Rimossi {len(audio_stems_invalid)} file audio corrotti dall'elaborazione")
+            print(f"\n⚠ Removed {len(audio_stems_invalid)} corrupted audio files from processing")
     else:
         audio_stems_invalid = {}
 
@@ -735,13 +751,13 @@ def main():
     aud_names = {Path(p).stem: p for p in audio_files}
     txt_names = {Path(p).stem: p for p in text_files}
 
-    print(f"\nFile dopo validazione: {len(img_files)} immagini, {len(audio_files)} audio, {len(text_files)} testi")
+    print(f"\nFiles after validation: {len(img_files)} images, {len(audio_files)} audio, {len(text_files)} texts")
 
     common = sorted(list(set(img_names.keys()) & set(aud_names.keys()) & set(txt_names.keys())))
     if len(common) == 0:
-        print("\n❌ Attenzione: nessun file con basename comune trovato tra le tre cartelle.")
+        print("\n❌ Warning: no files with common basename found across the three folders.")
         sys.exit(1)
-    print(f"\n✓ Trovati {len(common)} campioni con TUTTE E 3 le modalità. Esempio: {common[:5]}")
+    print(f"\n✓ Found {len(common)} samples with ALL 3 modalities. Example: {common[:5]}")
 
     image_items = [(n, img_names[n]) for n in common]
     audio_items = [(n, aud_names[n]) for n in common]
@@ -750,7 +766,7 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Controlla se le feature AudioCLIP esistono già
+    # Check if AudioCLIP features already exist
     audioclip_files_exist = (
         (outdir / "image_audioclip.npy").exists() and
         (outdir / "audio_audioclip.npy").exists() and
@@ -760,25 +776,25 @@ def main():
     csv_exists = (outdir / "item_features.csv").exists()
     
     # =============================================================================
-    # Riconciliazione se audio corrotti sono stati rimossi
+    # Reconciliation if corrupted audio files were removed
     # =============================================================================
     if audio_stems_invalid and audioclip_files_exist:
         print("\n" + "="*80)
-        print("⚠ AUDIO CORROTTI RIMOSSI - RICONCILIAZIONE EMBEDDINGS")
+        print("⚠ CORRUPTED AUDIO REMOVED - EMBEDDINGS RECONCILIATION")
         print("="*80)
-        print(f"Audio corrotti rilevati dalla validazione: {len(audio_stems_invalid)}")
-        print(f"Esempi: {sorted(list(audio_stems_invalid.keys()))[:5]}")
-        print("\nRiconciliazione automatica dei file .npy e CSV in corso...")
+        print(f"Corrupted audio detected by validation: {len(audio_stems_invalid)}")
+        print(f"Examples: {sorted(list(audio_stems_invalid.keys()))[:5]}")
+        print("\nAutomatic reconciliation of .npy and CSV files in progress...")
 
     if audioclip_files_exist:
         print("\n" + "="*80)
-        print("✓ Feature AudioCLIP già esistenti, caricamento in corso...")
+        print("✓ AudioCLIP features already exist, loading...")
         print("="*80)
         images_np = np.load(outdir / "image_audioclip.npy")
         audios_np = np.load(outdir / "audio_audioclip.npy")
         texts_np = np.load(outdir / "text_audioclip.npy")
         
-        # Carica i nomi validi dal CSV (se esiste)
+        # Load valid names from CSV (if exists)
         import csv
         if csv_exists:
             valid_names = []
@@ -786,57 +802,57 @@ def main():
                 reader = csv.DictReader(f)
                 for row in reader:
                     valid_names.append(row['item_id'])
-            print(f"✓ Caricati {len(valid_names)} campioni esistenti dal CSV")
+            print(f"✓ Loaded {len(valid_names)} existing samples from CSV")
         else:
-            # CSV mancante: ricostruisci dall'intersezione dei file
-            print("⚠ CSV mancante, ricostruzione dell'ordine dai file...")
-            # Usa 'common' già calcolato sopra - stesso ordine della prima estrazione
-            # Verifica che il numero corrisponda
+            # CSV missing: reconstruct from file intersection
+            print("⚠ CSV missing, reconstructing order from files...")
+            # Use 'common' already calculated above - same order as first extraction
+            # Verify that the number matches
             expected_count = images_np.shape[0]
             if len(common) != expected_count:
-                print(f"❌ ERRORE: Numero file comuni ({len(common)}) != embeddings esistenti ({expected_count})")
-                print("   Elimina i file .npy e riesegui l'estrazione completa.")
+                print(f"❌ ERROR: Number of common files ({len(common)}) != existing embeddings ({expected_count})")
+                print("   Delete the .npy files and rerun the full extraction.")
                 sys.exit(1)
             valid_names = common
-            print(f"✓ Ricostruiti {len(valid_names)} nomi dall'ordine dei file")
+            print(f"✓ Reconstructed {len(valid_names)} names from file order")
             
-            # Salva il CSV ricostruito
+            # Save reconstructed CSV
             with open(outdir / "item_features.csv", "w", newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 writer.writerow(["item_id", "idx"])
                 for i, name in enumerate(valid_names):
                     writer.writerow([name, i])
-            print(f"✓ Salvato CSV ricostruito: {outdir/'item_features.csv'}")
+            print(f"✓ Saved reconstructed CSV: {outdir/'item_features.csv'}")
         
         print(f"  - image_audioclip.npy: {images_np.shape}")
         print(f"  - audio_audioclip.npy: {audios_np.shape}")
         print(f"  - text_audioclip.npy: {texts_np.shape}")
         
         # =============================================================================
-        # RICONCILIAZIONE AUTOMATICA: rimuovi embeddings per file mancanti (sia corrotti che assenti)
+        # AUTOMATIC RECONCILIATION: remove embeddings for missing files (both corrupted and absent)
         # =============================================================================
         common_set = set(common)
         valid_names_set = set(valid_names)
         
-        # Trova file che erano presenti ma ora mancano
-        # Includi sia audio corretti che file rimossi per qualsiasi altro motivo
+        # Find files that were present but are now missing
+        # Include both corrected audio and files removed for any other reason
         missing_from_current = valid_names_set - common_set
         
         if missing_from_current:
             print("\n" + "="*80)
-            print("⚠ RICONCILIAZIONE AUTOMATICA: File mancanti rilevati")
+            print("⚠ AUTOMATIC RECONCILIATION: Missing files detected")
             print("="*80)
-            print(f"File presenti negli embeddings salvati: {len(valid_names)}")
-            print(f"File comuni trovati ora: {len(common)}")
-            print(f"File da rimuovere: {len(missing_from_current)}")
-            print(f"Esempi di file mancanti: {sorted(list(missing_from_current))[:10]}")
+            print(f"Files present in saved embeddings: {len(valid_names)}")
+            print(f"Common files found now: {len(common)}")
+            print(f"Files to remove: {len(missing_from_current)}")
+            print(f"Examples of missing files: {sorted(list(missing_from_current))[:10]}")
             
-            # Identifica quanti sono audio corrotti
+            # Identify how many are corrupted audio
             audio_corrotti_rimossi = len([n for n in missing_from_current if n in audio_stems_invalid])
             if audio_corrotti_rimossi > 0:
-                print(f"\n  Tra questi, {audio_corrotti_rimossi} audio corrotti e rimossi dalla validazione")
+                print(f"\n  Among these, {audio_corrotti_rimossi} corrupted audio removed by validation")
             
-            # Crea mapping old_idx -> item_id e identifica indici da mantenere
+            # Create mapping old_idx -> item_id and identify indices to keep
             indices_to_keep = []
             new_valid_names = []
             
@@ -845,9 +861,9 @@ def main():
                     indices_to_keep.append(idx)
                     new_valid_names.append(item_id)
             
-            print(f"\n✓ Mantengo {len(indices_to_keep)} righe, rimuovo {len(missing_from_current)} righe")
+            print(f"\n✓ Keeping {len(indices_to_keep)} rows, removing {len(missing_from_current)} rows")
             
-            # Filtra gli array numpy
+            # Filter numpy arrays
             images_np = images_np[indices_to_keep]
             audios_np = audios_np[indices_to_keep]
             texts_np = texts_np[indices_to_keep]
@@ -855,8 +871,8 @@ def main():
             # Aggiorna valid_names
             valid_names = new_valid_names
             
-            # Salva gli embeddings aggiornati
-            print("\n✓ Salvataggio embeddings AudioCLIP aggiornati...")
+            # Save updated embeddings
+            print("\n✓ Saving updated AudioCLIP embeddings...")
             np.save(outdir / "image_audioclip.npy", images_np)
             np.save(outdir / "audio_audioclip.npy", audios_np)
             np.save(outdir / "text_audioclip.npy", texts_np)
@@ -864,19 +880,19 @@ def main():
             print(f"  - audio_audioclip.npy: {audios_np.shape}")
             print(f"  - text_audioclip.npy: {texts_np.shape}")
             
-            # Salva CSV aggiornato
+            # Save updated CSV
             with open(outdir / "item_features.csv", "w", newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 writer.writerow(["item_id", "idx"])
                 for i, name in enumerate(valid_names):
                     writer.writerow([name, i])
-            print(f"✓ Salvato CSV aggiornato: {outdir/'item_features.csv'} ({len(valid_names)} righe)")
+            print(f"✓ Saved updated CSV: {outdir/'item_features.csv'} ({len(valid_names)} rows)")
             
-            # Riconcilia anche gli altri modelli se esistono
-            print("\n✓ Riconciliazione embeddings modelli aggiuntivi...")
+            # Reconcile additional models if they exist
+            print("\n✓ Reconciling additional model embeddings...")
             models_to_reconcile = [
-                ("image_clip.npy", "CLIP immagini"),
-                ("text_clip.npy", "CLIP testo"),
+                ("image_clip.npy", "CLIP images"),
+                ("text_clip.npy", "CLIP text"),
                 ("text_minilm.npy", "MiniLM"),
                 ("audio_vggish.npy", "VGGish"),
                 ("image_vit.npy", "ViT")
@@ -887,24 +903,24 @@ def main():
                 if fpath.exists():
                     arr = np.load(fpath)
                     if arr.shape[0] == len(valid_names) + len(missing_from_current):
-                        # Filtra anche questo
+                        # Filter this too
                         arr_filtered = arr[indices_to_keep]
                         np.save(fpath, arr_filtered)
                         print(f"  - {fname}: {arr.shape} → {arr_filtered.shape} ({desc})")
                     elif arr.shape[0] == len(valid_names):
-                        print(f"  - {fname}: già allineato ({desc})")
+                        print(f"  - {fname}: already aligned ({desc})")
                     else:
-                        print(f"  ⚠ {fname}: dimensioni non compatibili, skip ({desc})")
+                        print(f"  ⚠ {fname}: incompatible dimensions, skip ({desc})")
             
             print("="*80)
         else:
-            print("\n✓ Tutti i file sono presenti, nessuna riconciliazione necessaria")
+            print("\n✓ All files are present, no reconciliation necessary")
     else:
-        print("Estraggo feature immagini...")
+        print("Extracting image features...")
         image_results, image_failures = process_images_ordered(model, preprocess, image_items, device, batch_size=args.batch_size)
-        summarize_failures("immagini", image_failures)
+        summarize_failures("images", image_failures)
 
-        print("Estraggo feature audio (sliding_mean)...")
+        print("Extracting audio features (sliding_mean)...")
         audio_results, audio_failures = process_audios_sliding_mean(model, audio_items, device,
                                                sr=args.audio_sr,
                                                window_sec=args.window_sec,
@@ -912,175 +928,136 @@ def main():
                                                window_batch_size=args.window_batch_size)
         summarize_failures("audio", audio_failures)
 
-        print("Estraggo feature testo...")
+        print("Extracting text features...")
         text_results, text_failures = process_texts_ordered(model, text_items, device, batch_size=max(8, args.batch_size))
-        summarize_failures("testi", text_failures)
+        summarize_failures("texts", text_failures)
 
         valid_names = [n for n in common if n in image_results and n in audio_results and n in text_results]
         dropped = [n for n in common if n not in valid_names]
         
         print("\n" + "="*80)
-        print("REPORT FINALE ESTRAZIONE")
+        print("FINAL EXTRACTION REPORT")
         print("="*80)
-        print(f"Campioni iniziali con tutte e 3 modalità: {len(common)}")
-        print(f"Campioni estratti con successo: {len(valid_names)}")
+        print(f"Initial samples with all 3 modalities: {len(common)}")
+        print(f"Samples extracted successfully: {len(valid_names)}")
         
         if dropped:
-            print(f"\n⚠ Rimossi {len(dropped)} campioni per errori di estrazione:")
-            print(f"   Esempi: {dropped[:10]}")
+            print(f"\n⚠ Removed {len(dropped)} samples due to extraction errors:")
+            print(f"   Examples: {dropped[:10]}")
             
-            # Dettaglio errori per modalità
+            # Detail errors by modality
             dropped_img = [n for n in dropped if n not in image_results]
             dropped_aud = [n for n in dropped if n not in audio_results]
             dropped_txt = [n for n in dropped if n not in text_results]
             
             if dropped_img:
-                print(f"   - {len(dropped_img)} falliti per immagine")
+                print(f"   - {len(dropped_img)} failed for image")
             if dropped_aud:
-                print(f"   - {len(dropped_aud)} falliti per audio")
+                print(f"   - {len(dropped_aud)} failed for audio")
             if dropped_txt:
-                print(f"   - {len(dropped_txt)} falliti per testo")
+                print(f"   - {len(dropped_txt)} failed for text")
         
         if not valid_names:
-            print("\n❌ ERRORE: Nessun embedding estratto con successo. Controlla i messaggi precedenti.")
+            print("\n❌ ERROR: No embeddings extracted successfully. Check previous messages.")
             sys.exit(1)
         
-        print(f"\n✓ Procedendo con {len(valid_names)} campioni validi")
+        print(f"\n✓ Proceeding with {len(valid_names)} valid samples")
         print("="*80 + "\n")
 
         images_np = np.stack([image_results[n] for n in valid_names], axis=0).astype(np.float32)
         audios_np = np.stack([audio_results[n] for n in valid_names], axis=0).astype(np.float32)
         texts_np = np.stack([text_results[n] for n in valid_names], axis=0).astype(np.float32)
 
-        # Salva embeddings AudioCLIP
+        # Save AudioCLIP embeddings
         np.save(outdir / "image_audioclip.npy", images_np)
-        print(f"Salvato {outdir/'image_audioclip.npy'} shape={images_np.shape}")
+        print(f"Saved {outdir/'image_audioclip.npy'} shape={images_np.shape}")
         np.save(outdir / "audio_audioclip.npy", audios_np)
-        print(f"Salvato {outdir/'audio_audioclip.npy'} shape={audios_np.shape}")
+        print(f"Saved {outdir/'audio_audioclip.npy'} shape={audios_np.shape}")
         np.save(outdir / "text_audioclip.npy", texts_np)
-        print(f"Salvato {outdir/'text_audioclip.npy'} shape={texts_np.shape}")
+        print(f"Saved {outdir/'text_audioclip.npy'} shape={texts_np.shape}")
         
-        # Salva CSV mapping
+        # Save CSV mapping
         import csv
         with open(outdir / "item_features.csv", "w", newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(["item_id", "idx"])
             for i, name in enumerate(valid_names):
                 writer.writerow([name, i])
-        print(f"Salvato mapping {outdir/'item_features.csv'} N={len(valid_names)}")
+        print(f"Saved mapping {outdir/'item_features.csv'} N={len(valid_names)}")
 
     # =============================================================================
-    # ESTRAZIONE CON ALTRI MODELLI (stessi campioni valid_names)
+    # EXTRACTION WITH OTHER MODELS (same valid_names samples)
     # =============================================================================
     
     print("\n" + "="*80)
-    print("INIZIO ESTRAZIONE CON MODELLI AGGIUNTIVI")
+    print("START EXTRACTION WITH ADDITIONAL MODELS")
     print("="*80)
     
     # CLIP (testo + immagini)
     if (outdir / "image_clip.npy").exists() and (outdir / "text_clip.npy").exists():
-        print("\n✓ Feature CLIP già esistenti, skip estrazione")
+        print("\n✓ CLIP features already exist, skip extraction")
         image_clip = np.load(outdir / "image_clip.npy")
         text_clip = np.load(outdir / "text_clip.npy")
-        print(f"  Caricati: images {image_clip.shape}, texts {text_clip.shape}")
+        print(f"  Loaded: images {image_clip.shape}, texts {text_clip.shape}")
     else:
         try:
             image_clip, text_clip = extract_clip_features(valid_names, img_names, txt_names, device, batch_size=args.batch_size)
             np.save(outdir / "image_clip.npy", image_clip)
             np.save(outdir / "text_clip.npy", text_clip)
-            print(f"✓ Salvati embeddings CLIP")
+            print(f"✓ Saved CLIP embeddings")
         except Exception as e:
-            print(f"❌ Errore CLIP: {e}")
+            print(f"❌ CLIP error: {e}")
     
-    # MiniLM (solo testo)
-    if (outdir / "text_minilm.npy").exists():
-        print("\n✓ Feature MiniLM già esistenti, skip estrazione")
-        text_minilm = np.load(outdir / "text_minilm.npy")
-        print(f"  Caricati: {text_minilm.shape}")
-    else:
-        try:
-            text_minilm = extract_minilm_features(valid_names, txt_names, batch_size=args.batch_size)
-            np.save(outdir / "text_minilm.npy", text_minilm)
-            print(f"✓ Salvati embeddings MiniLM")
-        except Exception as e:
-            print(f"❌ Errore MiniLM: {e}")
+    # MiniLM (text only)
+    text_minilm = load_or_extract_single(outdir, "text_minilm.npy", extract_minilm_features, valid_names, txt_names, batch_size=args.batch_size, desc="MiniLM")
     
-    # ViT (solo immagini) - eseguito prima di VGGish per priorità immagini
-    if (outdir / "image_vit.npy").exists():
-        print("\n✓ Feature ViT già esistenti, skip estrazione")
-        image_vit = np.load(outdir / "image_vit.npy")
-        print(f"  Caricati: {image_vit.shape}")
-    else:
-        try:
-            image_vit = extract_vit_features(valid_names, img_names, device, batch_size=args.batch_size)
-            np.save(outdir / "image_vit.npy", image_vit)
-            print(f"✓ Salvati embeddings ViT")
-        except Exception as e:
-            print(f"❌ Errore ViT: {e}")
+    # ViT (images only) - run before VGGish for image priority
+    image_vit = load_or_extract_single(outdir, "image_vit.npy", extract_vit_features, valid_names, img_names, device, batch_size=args.batch_size, desc="ViT")
 
 
-    # VGGish (solo audio) - sostituisce Whisper; eseguito dopo ViT
-    if (outdir / "audio_vggish.npy").exists():
-        print("\n✓ Feature VGGish già esistenti, skip estrazione")
-        audio_vggish = np.load(outdir / "audio_vggish.npy")
-        print(f"  Caricati: {audio_vggish.shape}")
-    else:
-        try:
-            audio_vggish = extract_vggish_features(
-                valid_names, 
-                aud_names, 
-                vggish_model,
-                device=vggish_device,  # Usa GPU se disponibile
-                max_workers=8,  # Auto-detect optimal
-                batch_inference_size=64  # Batch grande per efficienza GPU
-            )
-            np.save(outdir / "audio_vggish.npy", audio_vggish)
-            print(f"✓ Salvati embeddings VGGish")
-        except Exception as e:
-            print(f"❌ Errore VGGish: {e}")
-            import traceback
-            traceback.print_exc()
+    # VGGish (audio only) - replaces Whisper; run after ViT
+    audio_vggish = load_or_extract_single(outdir, "audio_vggish.npy", extract_vggish_features, valid_names, aud_names, vggish_model, device=vggish_device, max_workers=1, batch_inference_size=1, desc="VGGish")
 
 
-    # opzionale normalizzazione L2 prima della concatenazione
+    # optional L2 normalization before concatenation
     if args.l2norm:
         images_np = l2_normalize_rows(images_np)
         audios_np = l2_normalize_rows(audios_np)
         texts_np = l2_normalize_rows(texts_np)
 
-    # concatenazione se richiesta
+    # concatenation if requested
     if not args.no_concat:
         concatenated = np.concatenate([images_np.astype(np.float32), audios_np.astype(np.float32), texts_np.astype(np.float32)], axis=1)
         np.save(outdir / "concatenated.npy", concatenated)
-        print(f"Salvato {outdir/'concatenated.npy'} shape={concatenated.shape}")
+        print(f"Saved {outdir/'concatenated.npy'} shape={concatenated.shape}")
 
-    # Salva o aggiorna CSV mapping item_id -> idx se non già fatto
-    if not (outdir / "item_features.csv").exists() or not audioclip_files_exist:
+    # Save CSV mapping if not exists
+    if not (outdir / "item_features.csv").exists():
         import csv
         with open(outdir / "item_features.csv", "w", newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(["item_id", "idx"])
             for i, name in enumerate(valid_names):
                 writer.writerow([name, i])
-        print(f"Salvato mapping {outdir/'item_features.csv'} N={len(valid_names)}")
+        print(f"Saved mapping {outdir/'item_features.csv'} N={len(valid_names)}")
 
     print("\n" + "="*80)
-    print("✓ ESTRAZIONE COMPLETATA CON SUCCESSO")
+    print("✓ EXTRACTION COMPLETED SUCCESSFULLY")
     print("="*80)
-    print(f"Files salvati in: {outdir}")
+    print(f"Files saved in: {outdir}")
     print(f"\nAudioCLIP:")
     print(f"  - image_audioclip.npy:  {images_np.shape}")
     print(f"  - audio_audioclip.npy:  {audios_np.shape}")
     print(f"  - text_audioclip.npy:   {texts_np.shape}")
-    print(f"\nModelli aggiuntivi (se disponibili):")
+    print(f"\nAdditional models (if available):")
     
-    # Verifica e stampa info sui file salvati
+    # Check and print info on saved files
     all_files = {
-        "image_clip.npy": "CLIP immagini",
-        "text_clip.npy": "CLIP testo",
-        "text_minilm.npy": "MiniLM testo",
+        "image_clip.npy": "CLIP images",
+        "text_clip.npy": "CLIP text",
+        "text_minilm.npy": "MiniLM text",
         "audio_vggish.npy": "VGGish audio",
-        "image_vit.npy": "ViT immagini"
+        "image_vit.npy": "ViT images"
     }
     
     for fname, desc in all_files.items():
@@ -1090,10 +1067,10 @@ def main():
             print(f"  - {fname}: {arr.shape} ({desc})")
     
     if not args.no_concat:
-        print(f"\nConcatenato:")
+        print(f"\nConcatenated:")
         print(f"  - concatenated.npy: {concatenated.shape}")
     print(f"\nMapping:")
-    print(f"  - item_features.csv: {len(valid_names)} righe")
+    print(f"  - item_features.csv: {len(valid_names)} rows")
     print("="*80)
 
 if __name__ == "__main__":
